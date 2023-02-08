@@ -1,0 +1,372 @@
+---
+title: "Analytic Report"
+author: "Yiru Gong, yg2832"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(caret)
+library(corrplot)
+library(pcalg)
+library(lavaan)
+library(mvnormalTest)
+library(tidyverse)
+```
+
+# Data cleaning
+
+```{r}
+load("Smoke.Rdata")
+dim(fMRIMatrix)
+N = dim(fMRIMatrix)[1]
+
+data = list()
+for (n in c(1:N)){
+  tmp = t(fMRIMatrix[n,,])
+  idx = c(1:(dim(tmp)[1] %/% 3)) *3
+  selected = tmp[idx,]
+  selected = cbind(selected, time=idx, subject=n)
+  data[[n]] = selected
+}
+data = Reduce(rbind,data)
+clean = data[,c(1:116)]
+
+data = as.data.frame(data)
+data$label = label[data$subject]
+dim(data)
+
+normal = clean[which(data$label=="Normal"),]
+smoke = clean[which(data$label=="Smoke"),]
+
+## label of each ROI region
+roi = read.csv("ROI_lab.csv",header = F) %>% 
+  separate(V1,into=c("name", "index"), sep=" ", convert = TRUE)
+```
+
+data: selected data with indicators "time" and "subject" and "label"
+clean: only fMRI data
+
+# Simple Analysis
+
+## Correlation
+
+```{r}
+# corr = cor(clean)
+corrplot(cor(normal),method = "color")
+corrplot(cor(smoke),method = "color")
+```
+
+hard to see difference
+
+## GLMNET modeling
+
+```{r}
+input = cbind(data[,1:116], label=as.factor(data$label))
+
+## modeling
+ctrl <- trainControl(method = "cv",
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+## parameter tuning
+glmnGrid <- expand.grid(.alpha = seq(0, 1, length = 21),
+                        .lambda = exp(seq(-8, 5, length = 50)))
+set.seed(1)
+model.glmn <- train(data[1:116],data$label,
+                    method = "glmnet",
+                    tuneGrid = glmnGrid,
+                    metric = "ROC",
+                    trControl = ctrl)
+model.glmn$bestTune
+
+myCol<- rainbow(25)
+myPar <- list(superpose.symbol = list(col = myCol),
+superpose.line = list(col = myCol))
+plot(model.glmn, par.settings = myPar, xTrans = function(x) log(x))
+```
+
+Model not working well
+
+# Graphical Models
+
+```{r}
+# # colnames(normal) = roi
+# colnames(normal) = paste0("V",c(1:ncol(normal)))
+# score_n = new("GaussL0penObsScore", normal, lambda=0.5*log(nrow(normal)))
+# ges.fit.n <- ges(score_n)
+# 
+# plot(ges.fit.n$essgraph, main = "Estimated CPDAG")
+# # as(ges.fit.n, "amat")
+```
+
+## Structural Equivalance Model
+
+estimate edge weight and cov matrix
+
+```{r}
+# mvnout <- mardia(normal)
+# ## Shapiro-Wilk Univariate normality test
+# mvnout$uv.shapiro
+# mvnout$mv.test
+```
+
+```{r}
+# ## estimate weight with SEM
+# edges = ges.fit.n$essgraph$`.->.in.edges`
+# frame = ""
+# for (n in c(1:length(edges)) ){
+#   if (length(edges[[n]]) != 0){
+#     node = paste0("V",n)
+#     parents = paste0("V",edges[[n]])
+#     syntax = paste(node,"~", paste(parents,collapse = ' + '))
+#     frame = paste(frame, syntax, sep = '\n')
+#   }
+# }
+# cat(frame)
+# 
+# fit.sem = sem(frame, data=normal, estimator = "MLM")
+# 
+# fitMeasures(fit.sem, c("chisq.scaled", "df.scaled", "pvalue.scaled", "bic"))
+# fitMeasures(fit.sem, c("rmsea.scaled", "rmsea.ci.lower.scaled", "rmsea.ci.upper.scaled", "rmsea.pvalue.scaled"))
+```
+
+```{r}
+# parameterEstimates(fit.sem)
+# sem.cov = fitted(fit.sem)$cov
+# sem.cor = cov2cor(sem.cov)
+# # vcov = vcov(fit.sem)
+# 
+# corrplot(sem.cor,method = "color")
+```
+
+```{r}
+# parameterEstimates(fit.sem, standardized=TRUE, rsquare = TRUE) %>% 
+#   filter(op == "r2") %>% 
+#   select(Item=rhs, R2 = est)
+```
+
+
+
+### glasso
+
+```{r}
+library(huge)
+
+set.seed(1)
+## normal graph
+glasso.est.n <- huge(normal, nlambda = 30, method = "glasso",cov.output = T)
+par(mfrow=c(2,2))
+plot(glasso.est.n)
+
+glasso.ric.n = huge.select(glasso.est.n, criterion = "ric")
+glasso.ric.n$opt.lambda
+plot(glasso.ric.n)
+
+## smoke graph
+glasso.est.s <- huge(smoke, nlambda = 30, method = "glasso",cov.output = T)
+par(mfrow=c(2,2))
+plot(glasso.est.s)
+
+glasso.ric.s = huge.select(glasso.est.s, criterion = "ric")
+glasso.ric.s$opt.lambda
+plot(glasso.ric.s)
+```
+
+```{r}
+# Check corr matrix based on the method
+n.glasso.cov = glasso.ric.n$opt.cov
+n.glasso.cor = cov2cor(n.glasso.cov)
+
+corrplot(n.glasso.cor, method = "color", type = "lower", labels=rep(NA,ncol(n.glasso.cor)))
+corrplot(cor(normal), method = "color", type = "upper",add = T)
+
+## smokers
+s.glasso.cov = glasso.ric.s$opt.cov
+s.glasso.cor = cov2cor(s.glasso.cov)
+
+corrplot(s.glasso.cor, method = "color", type = "lower", labels=rep(NA,ncol(s.glasso.cor)))
+corrplot(cor(smoke), method = "color", type = "upper",add = T)
+```
+
+
+```{r}
+# calculate the number of edges for each node
+jaccard <- function(a, b) {
+    intersection = sum(a+b  ==2)
+    union = sum(a+b >= 1)
+    return (intersection/union)
+}
+
+n.graph = glasso.ric.n$refit
+s.graph = glasso.ric.s$refit
+jaccard_score = c()
+for (n in c(1:ncol(n.graph))){
+  a = n.graph[,n]
+  b = s.graph[,n]
+  jaccard_score = c(jaccard_score, jaccard(a,b))
+}
+# names(jaccard_score) = colnames(n.graph)
+# jaccard_score = sort(jaccard_score)
+
+```
+
+
+## visualization
+
+```{r}
+library(rgl)
+library(misc3d)
+library(neurobase)
+library(aal)
+library(MNITemplate)
+
+# if (!requireNamespace("aal")) {
+#   devtools::install_github("muschellij2/aal")
+# } else {
+#   library(aal)
+# }
+# if (!requireNamespace("MNITemplate")) {
+#   devtools::install_github("jfortin1/MNITemplate")
+# } else {
+#   library(MNITemplate)
+# }
+
+img = aal_image()
+template = readMNI(res = "2mm")
+cut <- 4500
+dtemp <- dim(template)
+# All of the sections you can label
+labs = aal_get_labels()
+
+
+plotBrain = function(node, connection){
+  # hippocampus = labs$index[grep("Hippocampus_L", labs$name)]
+  node.idx = roi[node,2]
+  connect.idx = roi[connection,2]
+  mask1 = remake_img(vec = img %in% node.idx, img = img)
+  mask2 = remake_img(vec = img %in% connect.idx, img = img)
+  
+  ### this would be the ``activation'' or surface you want to render 
+  contour3d(template, x=1:dtemp[1], y=1:dtemp[2], z=1:dtemp[3], level = cut, alpha = 0.1, draw = TRUE)
+  contour3d(mask1, level = c(0.5), alpha = c(0.5), add = TRUE, color=c("red") )
+  contour3d(mask2, level = c(0.5), alpha = c(0.5), add = TRUE, color=c("blue") )
+  ### add text
+  text3d(x=dtemp[1]/2, y=dtemp[2]/2, z = dtemp[3]*0.98, text="Top")
+  text3d(x=-0.98, y=dtemp[2]/2, z = dtemp[3]/2, text="Right")
+  rglwidget()
+}
+```
+
+```{r}
+## brain region examples
+sort(jaccard_score)
+orders = order(jaccard_score)
+
+##Temporal_Inf_L 8301
+node = orders[2]
+n.connection = which(n.graph[,node]==1)
+s.connection = which(s.graph[,node]==1)
+# roi[n,]
+
+plotBrain(node, n.connection)
+plotBrain(node, s.connection)
+
+```
+
+
+```{r}
+# library(stats)
+# 
+# for (n in c(1:length(jaccard_score))){
+#   score = jaccard_score[n]
+#   result <- t.test(score, mu = 0, alternative = "two.sided", conf.level = 0.95)
+#   out = data.frame(jaccard=score, t_stats=result$statistic, p_value=result$p.value)
+# }
+# 
+# 
+# result <- t.test(jaccard_score, mu = 0, alternative = "two.sided", conf.level = 0.95)
+# cat("t-statistic:", result$statistic, "\n")
+# cat("p-value:", result$p.value, "\n")
+```
+
+
+## repeat model for t test
+
+```{r}
+all = list()
+for (n in c(1:N)){
+  tmp = t(fMRIMatrix[n,,])
+  selected = cbind(tmp, time=idx, subject=n)
+  all[[n]] = selected
+}
+all = Reduce(rbind,all)
+all.value = all[,c(1:116)]
+
+all = as.data.frame(all)
+all$label = label[all$subject]
+dim(all)
+
+all.normal = all.value[which(all$label=="Normal"),]
+all.smoke = all.value[which(all$label=="Smoke"),]
+
+
+repeatGraph = function(rep){
+  set.seed(rep)
+  nindex = sample(c(1:nrow(all.normal)), 2500, replace = T)
+  normal = all.normal[nindex,]
+  sindex = sample(c(1:nrow(all.smoke)), 2500, replace = T)
+  smoke = all.smoke[sindex,]
+  
+  ### graphical model
+  ## normal graph
+  glasso.est.n <- huge(normal, nlambda = 30, method = "glasso",cov.output = T)
+  glasso.ric.n = huge.select(glasso.est.n, criterion = "ric")
+  ## smoke graph
+  glasso.est.s <- huge(smoke, nlambda = 30, method = "glasso",cov.output = T)
+  glasso.ric.s = huge.select(glasso.est.s, criterion = "ric")
+  
+  ### Jaccard Similarity
+  jaccard <- function(a, b) {
+      intersection = sum(a+b  ==2)
+      union = sum(a+b >= 1)
+      return (intersection/union)
+  }
+  
+  n.graph = glasso.ric.n$refit
+  s.graph = glasso.ric.s$refit
+  jaccard_score = c()
+  for (n in c(1:ncol(n.graph))){
+    a = n.graph[,n]
+    b = s.graph[,n]
+    jaccard_score = c(jaccard_score, jaccard(a,b))
+  }
+  
+  return(list(
+    nindex = nindex,
+    sindex = sindex,
+    n.graph = n.graph,
+    s.graph = s.graph,
+    jaccard_score = jaccard_score
+  ))
+}
+
+test = repeatGraph(1)
+reps = lapply(1:10,function(x) repeatGraph(x))
+
+jacs = lapply(reps,function(x) x[["jaccard_score"]])
+jacs = Reduce(rbind,jacs)
+rownames(jacs) = NULL
+# hist(jacs[,30])
+p.value = apply(jacs,2,function(x) t.test(x, mu = 1, alternative = "less", conf.level = 0.95)$p.value)
+which(p.value<0.001)
+```
+
+
+
+
+
+
